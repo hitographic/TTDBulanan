@@ -5,14 +5,18 @@
 
 const LS_KEY = 'lapbul-cloud-v1'
 
+// URL bawaan agar tim langsung tersambung (bisa diganti per-HP di kartu Cloud).
+export const DEFAULT_CLOUD_URL =
+  'https://script.google.com/macros/s/AKfycbxmKvI7dV7aUQCohyI2YyYHJbdfVwUNgpQyKEHCtQUAZktcwLai9UnUZ8YHTPOmLAEgtA/exec'
+
 export const loadCloud = () => {
   try {
     const raw = localStorage.getItem(LS_KEY)
-    if (!raw) return { url: '', autoSync: true }
+    if (!raw) return { url: DEFAULT_CLOUD_URL, autoSync: true }
     const o = JSON.parse(raw)
-    return { url: String(o.url || '').trim(), autoSync: o.autoSync !== false }
+    return { url: String(o.url || '').trim() || DEFAULT_CLOUD_URL, autoSync: o.autoSync !== false }
   } catch {
-    return { url: '', autoSync: true }
+    return { url: DEFAULT_CLOUD_URL, autoSync: true }
   }
 }
 
