@@ -889,6 +889,16 @@ export default function App() {
     </div>
   )
 
+  const busyEl = busy && (
+    <div className="loadwrap" role="status">
+      <div className="loadcard">
+        <span className="loadspin" aria-hidden />
+        <b>Harap tunggu…</b>
+        <span>{busy}</span>
+      </div>
+    </div>
+  )
+
   const padEl = editingPerson && (
     <SignaturePad
       key={editing}
@@ -924,7 +934,7 @@ export default function App() {
   if (!session) {
     return (
       <>
-        {busy && <div className="busybar" role="status">{busy}</div>}
+        {busyEl}
         <LoginPage onLogin={doLogin} />
         {toastEl}
       </>
@@ -935,7 +945,7 @@ export default function App() {
   if (!isAdmin) {
     return (
       <>
-        {busy && <div className="busybar" role="status">{busy}</div>}
+        {busyEl}
         <UserWizard
           session={session}
           files={files}
