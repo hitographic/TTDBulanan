@@ -8,6 +8,42 @@ const shortName = (name) =>
 const STEPS = ['Baca', 'Pilih', 'Isi', 'Selesai']
 
 /**
+ * Mode "semua sekaligus": satu TTD untuk seluruh slot di semua laporan.
+ * Tanpa list — langsung satu kartu + popup tanda tangan.
+ */
+function AllAtOnce({ session, files, queue, sigOf, onRequestSign, setStage }) {
+  const mine = sigOf(session.nameInFile)
+  const on = Boolean(mine?.dataUrl)
+  const repKey = queue[0]?.key
+  return (
+    <>
+      <div className="onecard">
+        <small className="mut">Satu tanda tangan untuk</small>
+        <div className="baname">{queue.length} slot • {files.length} laporan</div>
+        <div className="onesig">
+          {on
+            ? <img src={mine.dataUrl} alt="Tanda tanganku" />
+            : <span className="badashed">Belum ada TTD — ketuk tombol di bawah</span>}
+        </div>
+        {repKey ? (
+          <button className="primary" style={{ width: '100%', minHeight: 54 }} onClick={() => onRequestSign(repKey)}>
+            {on ? '✏️ Ubah Tanda Tangan' : '✍️ Isi Tanda Tangan'}
+          </button>
+        ) : (
+          <p className="mut">Tidak ada slot untuk akun ini.</p>
+        )}
+      </div>
+      <div className="navrow">
+        <button className="ghost" onClick={() => setStage('mode')}>← Kembali</button>
+        <button className="primary" disabled={!on} onClick={() => setStage('done')}>
+          {on ? 'Selesai →' : 'Isi dulu'}
+        </button>
+      </div>
+    </>
+  )
+}
+
+/**
  * Walkthrough user biasa: 1 Baca laporan -> 2 Pilih mode ->
  * 3 Isi TTD (satu per satu / semua sekaligus) -> 4 Selesai.
  * Tiap halaman ada tombol ← →. Admin tetap memakai dashboard penuh.
@@ -188,7 +224,7 @@ export default function UserWizard({
             <span className="scicon" aria-hidden>⚡</span>
             <span className="sctext">
               <b>Semua sekaligus</b>
-              <small>Lihat semua slot, isi bebas urutan.</small>
+              <small>Satu TTD berlaku untuk semua laporan.</small>
             </span>
           </button>
           <div className="navrow">
@@ -248,32 +284,14 @@ export default function UserWizard({
             </>
           )}
 
-          {mode === 'all' && (
-            <>
-              {queue.map((q) => {
-                const s = sigOf(q.name)
-                const on = Boolean(s?.dataUrl)
-                return (
-                  <div key={`${q.fileId}-${q.key}`} className={`slotrow${on ? ' done' : ''}`}>
-                    <span className="scheck" aria-hidden>{on ? '★' : '•'}</span>
-                    <span className="sinfo">
-                      <b>{q.name}</b>
-                      <small>{shortName(q.fileName)}{q.month ? ` • ${q.month}` : ''}</small>
-                    </span>
-                    <button className={on ? '' : 'primary'} onClick={() => onRequestSign(q.key)}>
-                      {on ? 'Ubah' : 'Isi'}
-                    </button>
-                  </div>
-                )
-              })}
-              <div className="navrow">
-                <button className="ghost" onClick={() => setStage('mode')}>← Kembali</button>
-                <button className="primary" disabled={!allSigned} onClick={() => setStage('done')}>
-                  {allSigned ? 'Selesai →' : `${signedCount}/${queue.length}`}
-                </button>
-              </div>
-            </>
-          )}
+          {mode === 'all' && <AllAtOnce
+            session={session}
+            files={files}
+            queue={queue}
+            sigOf={sigOf}
+            onRequestSign={onRequestSign}
+            setStage={setStage}
+          />}
         </>
       )}
 
