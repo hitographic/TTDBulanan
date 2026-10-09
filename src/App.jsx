@@ -2,9 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import './styles.css'
 import { parseWorkbook, normKey } from './lib/excelParser'
 import { buildSheetModel, normalizeWorkbookBuffer } from './lib/sheetModel'
-import { exportSignedExcel } from './lib/excelExport'
+import { exportSignedExcel, buildSignedWorkbook } from './lib/excelExport'
 import { exportAllZip } from './lib/zipExport'
 import { exportPreviewPdf } from './lib/pdfExport'
+import {
+  loadCloud, saveCloud, cloudPing, cloudPull, cloudFiles, cloudGet,
+  cloudPush, cloudSave, mergeSignatures, bufToB64, b64ToBuf,
+} from './lib/cloud'
 import { browserMeasure, geomForSide } from './lib/textGeom'
 import SignaturePad from './components/SignaturePad'
 import ReportPreview from './components/ReportPreview'
@@ -55,6 +59,11 @@ export default function App() {
   const [drag, setDrag] = useState(false)
   const [confirmDel, setConfirmDel] = useState(null)
   const [spot, setSpot] = useState(true) // sorot slot belum TTD di preview
+  const [cloud, setCloud] = useState(loadCloud) // {url, autoSync} backend Apps Script
+  const [cloudUrl, setCloudUrl] = useState(cloud.url) // draft input URL
+  const [cloudOk, setCloudOk] = useState(null) // null=belum dites, true/false
+  const [showCloud, setShowCloud] = useState(false) // panel pengaturan cloud
+  const [driveFiles, setDriveFiles] = useState([]) // [{id,name,size,modified}]
   const delTimer = useRef(null)
 
   const notify = (msg, kind = 'info') => {
@@ -69,6 +78,20 @@ export default function App() {
       localStorage.setItem(SIG_STORE_KEY, JSON.stringify(signatures))
     } catch { /* kuota penuh / mode privat: abaikan */ }
   }, [signatures])
+
+  // Pengaturan cloud tersimpan otomatis; tes koneksi diam-diam bila ada URL
+  useEffect(() => {
+    try {
+      saveCloud(cloud)
+    } catch { /* abaikan */ }
+  }, [cloud])
+
+  useEffect(() => {
+    const c = loadCloud()
+    if (c.url) {
+      cloudPing(c.url).then(() => setCloudOk(true)).catch(() => setCloudOk(false))
+    }
+  }, []) // eslint-disable-line
 
   useEffect(() => () => clearTimeout(delTimer.current), [])
 
@@ -236,12 +259,23 @@ export default function App() {
   const pct = persons.length ? Math.round((signedCount / persons.length) * 100) : 0
   const remaining = persons.length - signedCount
 
-  const setSig = (key, dataUrl) =>
-    setSignatures((m) => ({ ...m, [key]: { dataUrl, enabled: true } }))
+  const setSig = (key, dataUrl, ts = Date.now()) =>
+    setSignatures((m) => ({ ...m, [key]: { dataUrl, enabled: true, updatedAt: ts } }))
+
+  // Kirim 1 TTD ke cloud di background (tak memblokir UI)
+  const pushSig = (key, name, dataUrl, ts) => {
+    if (!cloud.url || !cloud.autoSync) return
+    cloudPush(cloud.url, { key, name, dataUrl, updatedAt: ts }).catch((e) => {
+      console.warn('auto-sync gagal:', e.message)
+    })
+  }
 
   const saveAndNext = (url) => {
     if (!editing) return
-    setSig(editing, url)
+    const ts = Date.now()
+    const nm = persons.find((p) => p.key === editing)?.name ?? editing
+    setSig(editing, url, ts)
+    pushSig(editing, nm, url, ts)
     const idx = unsignedList.findIndex((p) => p.key === editing)
     const next = unsignedList[idx + 1] ?? unsignedList.find((p) => p.key !== editing) ?? null
     if (next) {
@@ -346,8 +380,157 @@ export default function App() {
     }
   }
 
-  const primaryAction = () => {
-    if (!files.length) {
+  /* ===== Cloud: Google Sheets (database TTD) + Drive (file) ===== */
+  const saveCloudUrl = async () => {
+    const c = { url: cloudUrl.trim(), autoSync: cloud.autoSync }
+    setCloud(c)
+    if (!c.url) {
+      setCloudOk(null)
+      notify('Cloud dimatikan — mode lokal.', 'info')
+      return
+    }
+    setBusy('Menghubungi cloud…')
+    try {
+      await cloudPing(c.url)
+      setCloudOk(true)
+      notify('Cloud tersambung. ✅', 'ok')
+    } catch (e) {
+      setCloudOk(false)
+      notify(e.message, 'err')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const doPull = async () => {
+    if (!cloud.url) return notify('Isi URL Apps Script dulu.', 'err')
+    setBusy('Mengambil TTD dari cloud…')
+    try {
+      const j = await cloudPull(cloud.url)
+      const { merged, added, updated } = mergeSignatures(signatures, j.signatures)
+      setSignatures(merged)
+      setCloudOk(true)
+      notify(
+        added || updated
+          ? `Sinkron: +${added} baru, ${updated} diperbarui dari cloud.`
+          : 'Cloud sudah sama dengan lokal.',
+        added || updated ? 'ok' : 'info'
+      )
+    } catch (e) {
+      setCloudOk(false)
+      notify(e.message, 'err')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const doPushAll = async () => {
+    if (!cloud.url) return notify('Isi URL Apps Script dulu.', 'err')
+    const entries = Object.entries(signatures).filter(([, s]) => s?.dataUrl)
+    if (!entries.length) return notify('Belum ada TTD lokal.', 'err')
+    const nameOf = (key) => persons.find((p) => p.key === key)?.name ?? key
+    setBusy('Mengirim TTD ke cloud…')
+    try {
+      let n = 0
+      for (const [key, s] of entries) {
+        setBusy(`Mengirim ${++n}/${entries.length}…`)
+        await cloudPush(cloud.url, {
+          key,
+          name: nameOf(key),
+          dataUrl: s.dataUrl,
+          updatedAt: s.updatedAt || 0,
+        })
+      }
+      setCloudOk(true)
+      notify(`${entries.length} TTD terkirim ke cloud.`, 'ok')
+    } catch (e) {
+      setCloudOk(false)
+      notify(e.message, 'err')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const doDriveList = async (silent = false) => {
+    if (!cloud.url) {
+      if (!silent) notify('Isi URL Apps Script dulu.', 'err')
+      return
+    }
+    if (!silent) setBusy('Memuat daftar Drive…')
+    try {
+      const j = await cloudFiles(cloud.url)
+      setDriveFiles(j.files || [])
+      setCloudOk(true)
+      if (!silent) {
+        notify(
+          j.files?.length ? `${j.files.length} file Excel di Drive.` : 'Folder Drive kosong — upload file dulu.',
+          'info'
+        )
+      }
+    } catch (e) {
+      setCloudOk(false)
+      if (!silent) notify(e.message, 'err')
+    } finally {
+      if (!silent) setBusy('')
+    }
+  }
+
+  const doDriveLoad = async (df) => {
+    setBusy(`Mengunduh ${shortName(df.name)}…`)
+    try {
+      const j = await cloudGet(cloud.url, df.id)
+      await addOneBatch([{ name: j.name || df.name, buf: b64ToBuf(j.base64) }])
+    } catch (e) {
+      notify(e.message, 'err')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+  const doDriveUpload = async (f) => {
+    if (!f) return notify('Pilih file dulu.', 'err')
+    setBusy(`Mengunggah ${shortName(f.name)}…`)
+    try {
+      await cloudSave(cloud.url, {
+        name: f.name,
+        base64: bufToB64(f.buffer.slice(0)),
+        mime: XLSX_MIME,
+      })
+      notify(`${shortName(f.name)} tersimpan di Drive.`, 'ok')
+      doDriveList(true)
+    } catch (e) {
+      notify(e.message, 'err')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const doDriveSaveSigned = async (f) => {
+    if (!f) return notify('Pilih file dulu.', 'err')
+    if (signedCount === 0) return notify('Isi minimal 1 tanda tangan dulu.', 'err')
+    setBusy(`Menyimpan hasil ${shortName(f.name)}…`)
+    try {
+      const wb = await buildSignedWorkbook({
+        originalBuffer: f.buffer.slice(0),
+        blocks: f.blocks,
+        signatures,
+      })
+      const buf = await wb.xlsx.writeBuffer()
+      const outName = f.name.replace(/\.xlsx?$/i, '') + '-signed.xlsx'
+      await cloudSave(cloud.url, { name: outName, base64: bufToB64(buf), mime: XLSX_MIME })
+      notify(`${outName} tersimpan di Drive.`, 'ok')
+      doDriveList(true)
+    } catch (e) {
+      console.error(e)
+      notify('Gagal menyimpan ke Drive: ' + e.message, 'err')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const primaryAction = () => {    if (!files.length) {
       notify('Upload file Excel dulu — bisa pilih banyak sekaligus.', 'info')
       setMtab('file')
       return
@@ -457,6 +640,70 @@ export default function App() {
                 {confirmDel === '__all__' ? 'Klik lagi untuk hapus semua' : 'Hapus semua'}
               </button>
             )}
+          </div>
+
+          {/* CLOUD — database TTD di Google Sheets */}
+          <div className="card" style={{ marginTop: 12 }}>
+            <h2>Cloud <span className="mut">• {!cloud.url ? 'mati (lokal saja)' : cloudOk ? '🟢 tersambung' : '⚪ belum dites'}</span></h2>
+            {(showCloud || !cloud.url) && (
+              <>
+                <input
+                  type="url" inputMode="url" autoComplete="off"
+                  placeholder="https://script.google.com/macros/s/…/exec"
+                  value={cloudUrl} onChange={(e) => setCloudUrl(e.target.value)}
+                  aria-label="URL Web App Apps Script"
+                />
+                <div className="toolbar" style={{ marginTop: 8 }}>
+                  <button className="primary" onClick={saveCloudUrl}>Simpan & Tes</button>
+                  {cloud.url && <button onClick={() => setShowCloud(false)}>Tutup</button>}
+                </div>
+              </>
+            )}
+            {cloud.url && !showCloud && (
+              <button className="linkbtn" onClick={() => setShowCloud(true)}>Ubah URL</button>
+            )}
+            {cloud.url && (
+              <>
+                <label className="switch" style={{ marginTop: 4 }}>
+                  <input
+                    type="checkbox" checked={cloud.autoSync}
+                    onChange={(e) => setCloud({ ...cloud, autoSync: e.target.checked })}
+                  />
+                  <span>Kirim otomatis tiap TTD baru</span>
+                </label>
+                <div className="toolbar" style={{ marginTop: 8 }}>
+                  <button onClick={doPull}>⬇ Ambil TTD</button>
+                  <button onClick={doPushAll}>⬆ Kirim semua</button>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* DRIVE — file laporan di Google Drive */}
+          <div className="card" style={{ marginTop: 12 }}>
+            <h2>Drive <span className="mut">• {driveFiles.length ? `${driveFiles.length} file` : 'folder laporan'}</span></h2>
+            {!cloud.url && <p className="mut" style={{ margin: '4px 0' }}>Hubungkan cloud dulu untuk akses Drive.</p>}
+            {cloud.url && (
+              <div className="toolbar" style={{ marginBottom: 6 }}>
+                <button onClick={() => doDriveList(false)}>Muat daftar</button>
+              </div>
+            )}
+            {driveFiles.map((df) => (
+              <div key={df.id} className="frow" title={`${df.name} — klik untuk memuat`}>
+                <span className="fname" onClick={() => doDriveLoad(df)}>{shortName(df.name)}</span>
+                <button
+                  className="iconbtn"
+                  onClick={() => doDriveLoad(df)}
+                  title={`Muat ${shortName(df.name)} ke app`}
+                  aria-label={`Muat ${shortName(df.name)}`}
+                >⬇</button>
+              </div>
+            ))}
+            <div className="explinks">
+              <button className="linkbtn" onClick={() => activeFile && doDriveUpload(activeFile)} disabled={!activeFile || !cloud.url}>Upload file ini (asli)</button>
+              <span aria-hidden>·</span>
+              <button className="linkbtn" onClick={() => activeFile && doDriveSaveSigned(activeFile)} disabled={!activeFile || !cloud.url}>Simpan hasil signed</button>
+            </div>
           </div>
         </div>
 
@@ -655,7 +902,13 @@ export default function App() {
           onClose={() => setEditing(null)}
           onToggleEnabled={() => toggleEnabled(editingPerson.key)}
           onDelete={() => { clearSig(editingPerson.key); setEditing(null) }}
-          onSave={(url) => { setSig(editingPerson.key, url); setEditing(null); notify(`TTD ${editingPerson.name} tersimpan.`, 'ok') }}
+          onSave={(url) => {
+            const ts = Date.now()
+            setSig(editingPerson.key, url, ts)
+            pushSig(editingPerson.key, editingPerson.name, url, ts)
+            setEditing(null)
+            notify(`TTD ${editingPerson.name} tersimpan.`, 'ok')
+          }}
           onSaveNext={saveAndNext}
         />
       )}
