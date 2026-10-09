@@ -15,7 +15,6 @@ import LoginPage from './components/LoginPage'
 import { browserMeasure, geomForSide } from './lib/textGeom'
 import SignaturePad from './components/SignaturePad'
 import ReportPreview from './components/ReportPreview'
-import UserFlow from './components/UserFlow'
 
 let fileSeq = 0
 let toastSeq = 0
@@ -868,39 +867,20 @@ export default function App() {
     document.getElementById(`${activeFile.id}-pg${v}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
+  // Pindah laporan sebelumnya / berikutnya
+  const activeIdx = activeFile ? files.findIndex((f) => f.id === activeFile.id) : -1
+  const stepFile = (dir) => {
+    if (!files.length) return
+    const n = ((activeIdx < 0 ? 0 : activeIdx) + dir + files.length) % files.length
+    setActiveId(files[n].id)
+    setMtab('preview')
+  }
+
   const editingPerson = editing ? persons.find((p) => p.key === editing) : null
   const editIdx = editingPerson ? unsignedList.findIndex((p) => p.key === editing) : -1
   const nextAfterEdit = editIdx >= 0
     ? (unsignedList[editIdx + 1] ?? unsignedList.find((p) => p.key !== editing) ?? null)
     : unsignedList[0] ?? null
-
-  // Finale user: pastikan TTD miliknya untuk file ini terkirim ke cloud
-  const pushOwnForFile = async (f) => {
-    if (!cloud.url) return false
-    try {
-      const jobs = []
-      slotNames(f).forEach(({ name }) => {
-        let k = normKey(name)
-        if (!isAdmin && session) {
-          if (!matchNameToUser(name, session)) return
-          k = myCanonKey
-        }
-        const s = signaturesRef.current[k]
-        if (s?.dataUrl && !jobs.find((j) => j.key === k)) {
-          jobs.push({ key: k, name, dataUrl: s.dataUrl, updatedAt: s.updatedAt || 0 })
-        }
-      })
-      for (const j of jobs) {
-        await cloudPush(cloud.url, j)
-      }
-      await flushPending(pendingRef.current, (p) =>
-        cloudPush(cloud.url, { key: p.key, name: p.name, dataUrl: p.dataUrl, updatedAt: p.updatedAt })
-      )
-      return true
-    } catch {
-      return false
-    }
-  }
 
   const toastEl = (
     <div className="toasts" aria-live="polite">
@@ -946,27 +926,6 @@ export default function App() {
         {busy && <div className="busybar" role="status">{busy}</div>}
         <LoginPage onLogin={doLogin} />
         {toastEl}
-      </>
-    )
-  }
-
-  // User biasa: alur game 3 tahap (admin: dashboard penuh di bawah)
-  if (!isAdmin) {
-    return (
-      <>
-        {busy && <div className="busybar" role="status">{busy}</div>}
-        <UserFlow
-          session={session}
-          files={files}
-          sigOf={sigOf}
-          isMine={(name) => matchNameToUser(name, session)}
-          effSigsFor={effSigsFor}
-          onRequestSign={(key) => handleEditSig(key, persons.find((p) => p.key === key)?.name ?? key)}
-          onFinalSave={pushOwnForFile}
-          onLogout={doLogout}
-        />
-        {toastEl}
-        {padEl}
       </>
     )
   }
@@ -1229,6 +1188,13 @@ export default function App() {
           <div className="card previewbar" style={{ marginTop: 12 }}>
             <div className="pvrow">
               <b className="pvtitle">{activeFile ? shortName(activeFile.name) : 'Preview'}</b>
+              {files.length > 1 && activeFile && (
+                <>
+                  <button className="iconbtn" onClick={() => stepFile(-1)} title="Laporan sebelumnya" aria-label="Laporan sebelumnya">←</button>
+                  <span className="mut">{activeIdx + 1}/{files.length}</span>
+                  <button className="iconbtn" onClick={() => stepFile(1)} title="Laporan berikutnya" aria-label="Laporan berikutnya">→</button>
+                </>
+              )}
               <button className="iconbtn" onClick={() => checkUpdates(true)} title="Perbarui TTD dari cloud" aria-label="Perbarui dari cloud">⟳</button>
               <div className="seg" role="tablist" aria-label="Mode preview">
                 <button className={view === 'laporan' ? 'on' : ''} onClick={() => setView('laporan')}>Laporan</button>
