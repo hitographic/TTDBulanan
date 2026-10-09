@@ -153,6 +153,17 @@ function doGet(e) {
       }
       return json({ ok: true, signatures: out });
     }
+    if (a === 'changes') {
+      // Peta ringan key -> updatedAt untuk polling (tanpa gambar, hemat kuota)
+      var csh = ttdSheet();
+      var cv = csh.getDataRange().getValues();
+      var map = {};
+      for (var c = 1; c < cv.length; c++) {
+        var ck = String(cv[c][0] || '');
+        if (ck) map[ck] = Number(cv[c][3]) || 0;
+      }
+      return json({ ok: true, changes: map });
+    }
     if (a === 'files') {
       // File Excel di folder utama + tiap subfolder bulan (mis. "Oktober").
       // Folder sistem "TTD" (gambar tanda tangan) dikecualikan dari bulan.

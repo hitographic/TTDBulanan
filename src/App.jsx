@@ -7,8 +7,8 @@ import { exportAllZip } from './lib/zipExport'
 import { exportPreviewPdf } from './lib/pdfExport'
 import {
   loadCloud, saveCloud, cloudPing, cloudPull, cloudFiles, cloudGet,
-  cloudPush, cloudSave, cloudUsers, cloudLogin,
-  mergeSignatures, pickSig, bufToB64, b64ToBuf,
+  cloudPush, cloudSave, cloudUsers, cloudLogin, cloudChanges,
+  mergeSignatures, pickSig, diffSince, flushPending, bufToB64, b64ToBuf,
 } from './lib/cloud'
 import { loadSession, saveSession, clearSession } from './lib/auth'
 import LoginPage from './components/LoginPage'
@@ -99,6 +99,55 @@ export default function App() {
       cloudPing(c.url).then(() => setCloudOk(true)).catch(() => setCloudOk(false))
     }
   }, []) // eslint-disable-line
+
+  // Tarik TTD baru bila ada perubahan di cloud (dipakai polling + tombol refresh)
+  const checkUpdates = async (manual) => {
+    if (!cloud.url || !session || session.offline) return false
+    if (manual) setBusy('Memeriksa pembaruan…')
+    try {
+      const ch = await cloudChanges(cloud.url)
+      const snap = JSON.stringify(ch.changes || {})
+      if (snap === lastSnapRef.current) return false
+      lastSnapRef.current = snap
+      if (!diffSince(signaturesRef.current, ch.changes)) return false
+      const j = await cloudPull(cloud.url)
+      const applied = mergeSignatures(signaturesRef.current, j.signatures)
+      if (applied.added + applied.updated === 0) return false
+      setSignatures((cur) => mergeSignatures(cur, j.signatures).merged)
+      if (applied.added > 0) notify(`Ada TTD baru dari rekan 🎉 (+${applied.added})`, 'ok')
+      else notify('Ada pembaruan TTD dari cloud.', 'info')
+      setCloudOk(true)
+      return true
+    } catch (e) {
+      if (manual) notify(e.message, 'err')
+      return false
+    } finally {
+      if (manual) setBusy('')
+    }
+  }
+
+  // Poll cloud tiap 20 detik: TTD rekan langsung muncul + antrean kirim di-flush
+  useEffect(() => {
+    if (!session || session.offline) return undefined
+    let stop = false
+    const tick = async () => {
+      if (stop || document.hidden) return
+      try {
+        await flushPending(pendingRef.current, (p) =>
+          cloudPush(cloud.url, { key: p.key, name: p.name, dataUrl: p.dataUrl, updatedAt: p.updatedAt })
+        )
+        await checkUpdates(false)
+      } catch { /* diam: coba lagi periode berikut */ }
+    }
+    const id = setInterval(tick, 20000)
+    const onVis = () => { if (!document.hidden) tick() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      stop = true
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', onVis)
+    }
+  }, [session, cloud.url]) // eslint-disable-line
 
   useEffect(() => () => clearTimeout(delTimer.current), [])
 
@@ -345,31 +394,52 @@ export default function App() {
   const setSig = (key, dataUrl, ts = Date.now()) =>
     setSignatures((m) => ({ ...m, [key]: { dataUrl, enabled: true, updatedAt: ts } }))
 
-  // Kirim 1 TTD ke cloud di background (tak memblokir UI)
-  const pushSig = (key, name, dataUrl, ts) => {
-    if (!cloud.url || !cloud.autoSync) return
-    cloudPush(cloud.url, { key, name, dataUrl, updatedAt: ts }).catch((e) => {
-      console.warn('auto-sync gagal:', e.message)
-    })
+  // Simpan lokal + kirim ke cloud. 'ok' | 'local' | 'fail' (fail = masuk antrean coba lagi)
+  const SAVE_MSG = 'Menyimpan TTD ke cloud…'
+  const pendingRef = useRef({}) // antrean kirim ulang bila gagal
+  const signaturesRef = useRef(signatures)
+  const lastSnapRef = useRef('')
+  useEffect(() => {
+    signaturesRef.current = signatures
+  }, [signatures])
+
+  const syncOne = async (key, name, dataUrl) => {
+    const ts = Date.now()
+    setSig(key, dataUrl, ts)
+    if (!cloud.url) return 'local'
+    setBusy(SAVE_MSG)
+    try {
+      await cloudPush(cloud.url, { key, name, dataUrl, updatedAt: ts })
+      return 'ok'
+    } catch (e) {
+      console.warn('kirim TTD gagal, masuk antrean:', e.message)
+      pendingRef.current[key] = { key, name, dataUrl, updatedAt: ts }
+      return 'fail'
+    } finally {
+      setBusy((b) => (b === SAVE_MSG ? '' : b))
+    }
   }
 
-  const saveAndNext = (url) => {
+  const saveAndNext = async (url) => {
     if (!editing) return
-    const ts = Date.now()
     const storeKey = storeKeyFor(editing)
     const nm = persons.find((p) => p.key === editing)?.name ?? editing
-    setSig(storeKey, url, ts)
-    pushSig(storeKey, nm, url, ts)
     const idx = unsignedList.findIndex((p) => p.key === editing)
     const next = unsignedList[idx + 1] ?? unsignedList.find((p) => p.key !== editing) ?? null
     if (next) {
       setEditing(next.key)
-      notify(`TTD ${persons.find((p) => p.key === editing)?.name ?? ''} tersimpan. Lanjut: ${next.name}.`, 'ok')
+      notify(`TTD ${nm} tersimpan. Lanjut: ${next.name}.`, 'ok')
     } else {
       setEditing(null)
       notify('Semua TTD lengkap. Siap export. 🎉', 'ok')
       setMtab('preview')
     }
+    if (!cloud.autoSync) {
+      setSig(storeKey, url)
+      return
+    }
+    const r = await syncOne(storeKey, nm, url)
+    if (r === 'fail') notify('Gagal kirim ke cloud — tersimpan lokal, dicoba otomatis. 🔄', 'err')
   }
 
   const toggleEnabled = (key) => {
@@ -412,6 +482,7 @@ export default function App() {
   }
 
   const doExportOne = async (f) => {
+    if (!isAdmin) return notify('Hanya admin yang bisa download.', 'err')
     if (!f) return notify('Pilih file dulu.', 'err')
     if (signedCount === 0) return notify('Isi minimal 1 tanda tangan dulu.', 'err')
     try {
@@ -429,6 +500,7 @@ export default function App() {
   }
 
   const doExportZip = async () => {
+    if (!isAdmin) return notify('Hanya admin yang bisa download.', 'err')
     if (!files.length) return notify('Upload file Excel dulu.', 'err')
     if (signedCount === 0) return notify('Isi minimal 1 tanda tangan dulu.', 'err')
     setBusy('Menyiapkan ZIP…')
@@ -458,6 +530,7 @@ export default function App() {
   }
 
   const doExportPdf = async () => {
+    if (!isAdmin) return notify('Hanya admin yang bisa download.', 'err')
     if (!activeFile) return notify('Pilih file dulu.', 'err')
     if (signedCount === 0) return notify('Isi minimal 1 tanda tangan dulu.', 'err')
     try {
@@ -1027,6 +1100,7 @@ export default function App() {
           <div className="card previewbar" style={{ marginTop: 12 }}>
             <div className="pvrow">
               <b className="pvtitle">{activeFile ? shortName(activeFile.name) : 'Preview'}</b>
+              <button className="iconbtn" onClick={() => checkUpdates(true)} title="Perbarui TTD dari cloud" aria-label="Perbarui dari cloud">⟳</button>
               <div className="seg" role="tablist" aria-label="Mode preview">
                 <button className={view === 'laporan' ? 'on' : ''} onClick={() => setView('laporan')}>Laporan</button>
                 <button className={view === 'ringkas' ? 'on' : ''} onClick={() => setView('ringkas')}>Ringkas</button>
@@ -1147,13 +1221,22 @@ export default function App() {
           onClose={() => setEditing(null)}
           onToggleEnabled={() => toggleEnabled(editingPerson.key)}
           onDelete={() => { clearSig(editingPerson.key); setEditing(null) }}
-          onSave={(url) => {
-            const ts = Date.now()
+          onSave={async (url) => {
             const storeKey = storeKeyFor(editingPerson.key)
-            setSig(storeKey, url, ts)
-            pushSig(storeKey, editingPerson.name, url, ts)
+            const nm = editingPerson.name
             setEditing(null)
-            notify(`TTD ${editingPerson.name} tersimpan.`, 'ok')
+            if (!cloud.autoSync) {
+              setSig(storeKey, url)
+              notify(`TTD ${nm} tersimpan.`, 'ok')
+              return
+            }
+            const r = await syncOne(storeKey, nm, url)
+            notify(
+              r === 'ok' ? `TTD ${nm} tersimpan di cloud ✅`
+              : r === 'local' ? `TTD ${nm} tersimpan.`
+              : `TTD ${nm} tersimpan lokal ⚠️ — koneksi gagal, dicoba otomatis. 🔄`,
+              r === 'fail' ? 'err' : 'ok'
+            )
           }}
           onSaveNext={saveAndNext}
         />

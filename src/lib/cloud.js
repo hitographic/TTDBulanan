@@ -73,6 +73,7 @@ export const cloudPull = (url) => get(url, { action: 'pull' }) // -> {signatures
 export const cloudFiles = (url) => get(url, { action: 'files' }) // -> {months, files:[{id,name,month,monthId,size,modified}]}
 export const cloudGet = (url, fileId) => get(url, { action: 'get', fileId }) // -> {name,mime,base64}
 export const cloudUsers = (url) => get(url, { action: 'users' }) // -> {users:[{nik,name,nameInFile,role,aliases}]} (tanpa password)
+export const cloudChanges = (url) => get(url, { action: 'changes' }) // -> {changes:{key:updatedAt}} (ringan, untuk polling)
 export const cloudLogin = (url, nik, password) =>
   get(url, { action: 'login', nik, password }) // -> {user:{nik,name,nameInFile,role,aliases}}
 export const cloudPush = (url, { key, name, dataUrl, updatedAt }) =>
@@ -137,4 +138,24 @@ export function pickSig(signatures, aliasToKey, name, scopeKeys = []) {
     if (signatures[key]?.dataUrl && fuzzyNameMatch(name, raw)) return signatures[key]
   }
   return null
+}
+
+/** Ada perubahan cloud yang lebih baru dari lokal? (untuk polling). */
+export function diffSince(local, changes) {
+  const map = changes || {}
+  return Object.entries(map).some(([k, rt]) => Number(rt) > Number(local[k]?.updatedAt || 0))
+}
+
+/** Coba kirim antrean yang gagal; berhenti di gagal pertama, lanjut periode berikut. */
+export async function flushPending(pending, pushFn) {
+  const keys = Object.keys(pending)
+  for (const k of keys) {
+    try {
+      await pushFn(pending[k])
+      delete pending[k]
+    } catch {
+      break
+    }
+  }
+  return pending
 }
