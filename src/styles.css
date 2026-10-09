@@ -552,6 +552,10 @@ button.modecard.sel { background:var(--sun); transform:rotate(-.5deg); }
 .onesig { min-height:130px; display:flex; align-items:center; justify-content:center; background:#fff; border:2.5px dashed #b3a586; border-radius:14px; margin:12px 0; padding:10px; }
 .onesig img { max-height:120px; max-width:100%; object-fit:contain; }
 
+/* Canvas TTD di preview: polos tanpa efek chunky */
+button.xsig { border:none; border-radius:0; box-shadow:none; background:none; padding:0; }
+button.xsig:active:not(:disabled) { transform:none; box-shadow:none; }
+
 /* ================= Loading popup ================= */
 .loadwrap { position:fixed; inset:0; z-index:70; background:rgba(31,42,68,.55); display:flex; align-items:center; justify-content:center; padding:20px; animation:lup .2s ease-out; }
 .loadcard { background:#fffdf7; border:3px solid var(--ink); border-radius:22px; box-shadow:8px 8px 0 var(--ink); padding:26px 30px; text-align:center; max-width:min(340px,90vw); display:flex; flex-direction:column; align-items:center; gap:8px; }
