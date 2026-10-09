@@ -726,23 +726,32 @@ export default function App() {
 
   const primaryAction = () => {
     if (!files.length) {
-      notify('Upload file Excel dulu — bisa pilih banyak sekaligus.', 'info')
-      setMtab('file')
+      if (isAdmin) {
+        notify('Upload file Excel dulu — bisa pilih banyak sekaligus.', 'info')
+        setMtab('file')
+      } else {
+        notify('Belum ada file laporan untuk akun ini.', 'info')
+      }
       return
     }
     if (nextUp) {
-      setEditing(nextUp.key)
+      handleEditSig(nextUp.key, nextUp.name)
       setMtab('nama')
       return
     }
-    doExportZip()
+    if (isAdmin) {
+      doExportZip()
+      return
+    }
+    notify('Semua TTD lengkap ✅', 'ok')
+    setMtab('preview')
   }
 
   const ctaLabel = !files.length
-    ? '📤 Upload file'
+    ? (isAdmin ? '📤 Upload file' : '📄 Laporan')
     : nextUp
       ? `Isi: ${nextUp.name}`
-      : `⬇ ZIP (${files.length})`
+      : (isAdmin ? `⬇ ZIP (${files.length})` : '✅ Lengkap')
 
   const jumpToPage = (v) => {
     if (!v || !activeFile) return
@@ -803,6 +812,7 @@ export default function App() {
         <div className="pane pane-file">
           <div className="card">
             <h2>File <span className="mut">{files.length ? `• ${files.length} file, ${totalBlocks} hlm` : ''}</span></h2>
+            {isAdmin && (
             <div
               className={`dropzone mini${drag ? ' over' : ''}`}
               onDragOver={(e) => { e.preventDefault(); setDrag(true) }}
@@ -817,6 +827,13 @@ export default function App() {
                 <button className="linkbtn" onClick={loadSample}>atau coba file contoh →</button>
               )}
             </div>
+            )}
+            {!isAdmin && !files.length && (
+              <div className="empty">
+                <div className="emptyart">📄</div>
+                <p className="mut">Belum ada laporan untukmu.</p>
+              </div>
+            )}
 
             {files.map((f) => {
               const st = fileSignedInfo(f)
@@ -827,12 +844,15 @@ export default function App() {
                   <span className={`dot${st.done ? ' ok' : st.hit ? ' half' : ''}`} />
                   <span className="fname">{shortName(f.name)}</span>
                   {f.month && <span className="badge">{f.month}</span>}
+                  {isAdmin && (
                   <button
                     className="iconbtn"
                     onClick={(e) => { e.stopPropagation(); doExportOne(f) }}
                     title="Download XLSX bertanda tangan"
                     aria-label={`Download ${shortName(f.name)}`}
                   >⬇</button>
+                  )}
+                  {isAdmin && (
                   <button
                     className={`iconbtn${confirmDel === f.id ? ' danger' : ''}`}
                     onClick={(e) => { e.stopPropagation(); askRemove(f.id) }}
@@ -841,18 +861,20 @@ export default function App() {
                   >
                     {confirmDel === f.id ? '?' : '✕'}
                   </button>
+                  )}
                   <span className="fbar"><span style={{ width: `${p}%` }} /></span>
                 </div>
               )
             })}
-            {files.length > 1 && (
+            {isAdmin && files.length > 1 && (
               <button className={`linkbtn dim${confirmDel === '__all__' ? ' danger-text' : ''}`} onClick={askClearAll}>
                 {confirmDel === '__all__' ? 'Klik lagi untuk hapus semua' : 'Hapus semua'}
               </button>
             )}
           </div>
 
-          {/* CLOUD — database TTD di Google Sheets */}
+          {/* CLOUD — database TTD di Google Sheets (admin saja) */}
+          {isAdmin && (
           <div className="card" style={{ marginTop: 12 }}>
             <h2>Cloud <span className="mut">• {!cloud.url ? 'mati (lokal saja)' : cloudOk ? '🟢 tersambung' : '⚪ belum dites'}</span></h2>
             {(showCloud || !cloud.url) && (
@@ -888,8 +910,10 @@ export default function App() {
               </>
             )}
           </div>
+          )}
 
-          {/* DRIVE — file laporan di Google Drive */}
+          {/* DRIVE — file laporan di Google Drive (admin saja) */}
+          {isAdmin && (
           <div className="card" style={{ marginTop: 12 }}>
             <h2>Drive <span className="mut">• {driveFiles.length ? `${driveFiles.length} file` : 'folder laporan'}</span></h2>
             {!cloud.url && <p className="mut" style={{ margin: '4px 0' }}>Hubungkan cloud dulu untuk akses Drive.</p>}
@@ -923,6 +947,7 @@ export default function App() {
               <button className="linkbtn" onClick={() => activeFile && doDriveSaveSigned(activeFile)} disabled={!activeFile || !cloud.url}>Simpan hasil signed</button>
             </div>
           </div>
+          )}
         </div>
 
         {/* LANGKAH 2 — TANDA TANGAN */}
@@ -932,8 +957,8 @@ export default function App() {
             {!scopePersons.length && (
               <div className="empty">
                 <div className="emptyart">📁</div>
-                <p className="mut">Upload file dulu.</p>
-                <button className="primary" onClick={() => setMtab('file')}>Upload →</button>
+                <p className="mut">{isAdmin ? 'Upload file dulu.' : 'Belum ada laporan untukmu.'}</p>
+                {isAdmin && <button className="primary" onClick={() => setMtab('file')}>Upload →</button>}
               </div>
             )}
             {!!scopePersons.length && nextUp && (
@@ -978,8 +1003,9 @@ export default function App() {
           </div>
         </div>
 
-        {/* LANGKAH 3 — PERIKSA & EXPORT */}
+        {/* LANGKAH 3 — PERIKSA & EXPORT (export khusus admin) */}
         <div className="pane pane-preview">
+          {isAdmin && (
           <div className="card export">
             <div className="expgrid">
               <div className="expinfo">
@@ -996,6 +1022,7 @@ export default function App() {
               <button className="linkbtn" onClick={doExportPdf} disabled={!activeFile}>PDF file ini</button>
             </div>
           </div>
+          )}
 
           <div className="card previewbar" style={{ marginTop: 12 }}>
             <div className="pvrow">
@@ -1049,7 +1076,7 @@ export default function App() {
             {!activeFile && (
               <div className="card empty">
                 <div className="emptyart">📄</div>
-                <p className="mut">Belum ada preview. Upload file di langkah 1.</p>
+                <p className="mut">{isAdmin ? 'Belum ada preview. Upload file di langkah 1.' : 'Belum ada laporan untuk ditampilkan.'}</p>
               </div>
             )}
             {activeFile && view === 'laporan' && (
