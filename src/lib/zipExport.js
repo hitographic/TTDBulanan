@@ -5,7 +5,7 @@ import { buildSignedWorkbook } from './excelExport.js'
  * Gabungkan SEMUA file bertanda tangan ke dalam 1 file ZIP.
  * Jauh lebih ramah user dibanding N kali download yang sering diblokir browser/HP.
  */
-export async function exportAllZip({ files, signatures, outName, onProgress }) {
+export async function exportAllZip({ files, signatures, signaturesForFile, outName, onProgress }) {
   if (!files?.length) throw new Error('Belum ada file.')
   const zip = new JSZip()
   for (let i = 0; i < files.length; i++) {
@@ -14,7 +14,7 @@ export async function exportAllZip({ files, signatures, outName, onProgress }) {
     const wb = await buildSignedWorkbook({
       originalBuffer: f.buffer,
       blocks: f.blocks,
-      signatures,
+      signatures: signaturesForFile ? signaturesForFile(f) : signatures,
     })
     const buf = await wb.xlsx.writeBuffer()
     const entryName = f.name.replace(/\.xlsx?$/i, '') + '-signed.xlsx'

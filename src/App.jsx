@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './styles.css'
-import { parseWorkbook, normKey } from './lib/excelParser'
+import { parseWorkbook, normKey, matchNameToUser } from './lib/excelParser'
 import { buildSheetModel, normalizeWorkbookBuffer } from './lib/sheetModel'
 import { exportSignedExcel, buildSignedWorkbook } from './lib/excelExport'
 import { exportAllZip } from './lib/zipExport'
 import { exportPreviewPdf } from './lib/pdfExport'
 import {
   loadCloud, saveCloud, cloudPing, cloudPull, cloudFiles, cloudGet,
-  cloudPush, cloudSave, mergeSignatures, bufToB64, b64ToBuf,
+  cloudPush, cloudSave, cloudUsers, cloudLogin,
+  mergeSignatures, pickSig, bufToB64, b64ToBuf,
 } from './lib/cloud'
+import { loadSession, saveSession, clearSession } from './lib/auth'
+import LoginPage from './components/LoginPage'
 import { browserMeasure, geomForSide } from './lib/textGeom'
 import SignaturePad from './components/SignaturePad'
 import ReportPreview from './components/ReportPreview'
@@ -63,7 +66,11 @@ export default function App() {
   const [cloudUrl, setCloudUrl] = useState(cloud.url) // draft input URL
   const [cloudOk, setCloudOk] = useState(null) // null=belum dites, true/false
   const [showCloud, setShowCloud] = useState(false) // panel pengaturan cloud
-  const [driveFiles, setDriveFiles] = useState([]) // [{id,name,size,modified}]
+  const [driveFiles, setDriveFiles] = useState([]) // [{id,name,month,monthId,size,modified}]
+  const [session, setSession] = useState(loadSession) // {nik,name,nameInFile,role,aliases} | null
+  const [users, setUsers] = useState([]) // daftar user (tanpa password) untuk alias
+  const [months, setMonths] = useState([]) // [{id,name}] folder bulan di Drive
+  const [monthSel, setMonthSel] = useState('__all__')
   const delTimer = useRef(null)
 
   const notify = (msg, kind = 'info') => {
@@ -95,12 +102,13 @@ export default function App() {
 
   useEffect(() => () => clearTimeout(delTimer.current), [])
 
-  async function addOneBatch(items) {
+  // Parse mentah tanpa state/toast — dipakai upload manual & boot login
+  async function parseItems(items) {
     const next = []
     const failed = []
     setBusy('Membaca file…')
     try {
-      for (const { name, buf } of items) {
+      for (const { name, buf, month, monthId } of items) {
         try {
           // .xls lawas dikonversi dulu ke .xlsx agar preview & export jalan
           const xbuf = normalizeWorkbookBuffer(buf.slice(0))
@@ -119,6 +127,8 @@ export default function App() {
           next.push({
             id: `${Date.now()}-${fileSeq++}`,
             name,
+            month: month || '',
+            monthId: monthId || '',
             buffer: xbuf.slice(0),
             sheetName: parsed.sheetName,
             aoa: parsed.aoa,
@@ -134,8 +144,13 @@ export default function App() {
     } finally {
       setBusy('')
     }
+    return { next, failed }
+  }
+
+  async function addOneBatch(items, opts = {}) {
+    const { next, failed } = await parseItems(items)
     failed.forEach((m) => notify(`Gagal membaca ${m}`, 'err'))
-    if (!next.length) return
+    if (!next.length) return []
     setFiles((prev) => {
       const map = new Map(prev.map((f) => [f.name, f]))
       next.forEach((f) => map.set(f.name, f))
@@ -146,17 +161,12 @@ export default function App() {
     })
     setActiveId((cur) => cur ?? next[0]?.id ?? null)
     setMtab((cur) => (cur === 'file' ? 'nama' : cur))
-    const pages = next.reduce((n, f) => n + f.blocks.length, 0)
-    notify(`${next.length} file dimuat • ${pages} halaman. Lanjut isi TTD.`, 'ok')
+    if (!opts.quiet) {
+      const pages = next.reduce((n, f) => n + f.blocks.length, 0)
+      notify(`${next.length} file dimuat • ${pages} halaman. Lanjut isi TTD.`, 'ok')
+    }
+    return next
   }
-
-  // Contoh bawaan bila belum ada file
-  useEffect(() => {
-    fetch(SAMPLE_NAME)
-      .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject()))
-      .then((buf) => addOneBatch([{ name: SAMPLE_NAME, buf }]))
-      .catch(() => {})
-  }, []) // eslint-disable-line
 
   const readInputFiles = async (fileList) => {
     const list = [...(fileList || [])]
@@ -220,6 +230,71 @@ export default function App() {
     delTimer.current = setTimeout(() => setConfirmDel(null), 2600)
   }
 
+  /* ===== Auth & cakupan: user biasa hanya miliknya, admin semua ===== */
+  const isAdmin = session?.role === 'admin'
+
+  // Peta alias global: normKey(varian) -> kunci kanonis pemilik
+  const aliasToKey = useMemo(() => {
+    const m = new Map()
+    users.forEach((u) => {
+      const canon = normKey(u.nameInFile || '')
+      if (!canon) return
+      ;(u.aliases || []).forEach((a) => {
+        const k = normKey(a)
+        if (k && k !== canon) m.set(k, canon)
+      })
+    })
+    return m
+  }, [users])
+
+  // Kunci kanonis + varian milik akun login (untuk fuzzy inisial)
+  const myCanonKey = session ? normKey(session.nameInFile) : null
+  const scopeList = useMemo(() => {
+    if (!session || isAdmin) return []
+    const out = []
+    if (session.nameInFile) out.push({ raw: session.nameInFile, key: myCanonKey })
+    ;(session.aliases || []).forEach((a) => out.push({ raw: a, key: myCanonKey }))
+    return out
+  }, [session, isAdmin, myCanonKey])
+
+  // TTD efektif untuk sebuah nama di file
+  const sigOf = (name) => pickSig(signatures, aliasToKey, name, scopeList)
+
+  const fileHasUser = (f, ses) => {
+    if (!ses || ses.role === 'admin') return true
+    const mine = { nameInFile: ses.nameInFile, aliases: ses.aliases }
+    return f.persons.some((p) => matchNameToUser(p.name, mine))
+  }
+
+  // Peta TTD per file untuk export/preview (varian ejaan ikut terisi)
+  const effSigsFor = (f) => {
+    const m = { ...signatures }
+    slotNames(f).forEach(({ name }) => {
+      const s = sigOf(name)
+      if (s) m[normKey(name)] = s
+    })
+    return m
+  }
+
+  // Kunci penyimpanan: user biasa selalu ke kunci kanonisnya (1 TTD utk semua varian)
+  const storeKeyFor = (key) => (isAdmin || !session ? key : myCanonKey || key)
+
+  const canSign = (key, name) => {
+    if (isAdmin) return true
+    if (!session) return false
+    if (myCanonKey && (key === myCanonKey || aliasToKey.get(key) === myCanonKey)) return true
+    return matchNameToUser(name || key, session)
+  }
+
+  const handleEditSig = (key, name) => {
+    if (canSign(key, name)) {
+      setEditing(key)
+      return true
+    }
+    notify(`Slot ini milik ${name || key} — hanya pemilik yang bisa mengisi.`, 'err')
+    return false
+  }
+
   // Gabungan nama lintas SEMUA file — 1 TTD berlaku ke semua file sekaligus
   const persons = useMemo(() => {
     const map = new Map()
@@ -241,23 +316,31 @@ export default function App() {
     [files, activeId]
   )
 
-  const isSigned = (key) => Boolean(signatures[key]?.dataUrl && signatures[key]?.enabled !== false)
+  // User biasa: progres & daftar hanya atas namanya sendiri
+  const scopePersons = useMemo(() => {
+    if (isAdmin || !session) return persons
+    const mine = { nameInFile: session.nameInFile, aliases: session.aliases }
+    return persons.filter((p) => matchNameToUser(p.name, mine))
+  }, [persons, session, isAdmin])
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase()
-    let arr = persons
-    if (filter === 'belum') arr = arr.filter((p) => !signatures[p.key]?.dataUrl)
-    else if (filter === 'sudah') arr = arr.filter((p) => signatures[p.key]?.dataUrl)
+    let arr = scopePersons
+    if (filter === 'belum') arr = arr.filter((p) => !sigOf(p.name)?.dataUrl)
+    else if (filter === 'sudah') arr = arr.filter((p) => sigOf(p.name)?.dataUrl)
     if (s) arr = arr.filter((p) => p.name.toLowerCase().includes(s))
     return arr
-  }, [persons, q, filter, signatures])
+  }, [scopePersons, q, filter, signatures, aliasToKey, session, isAdmin])
 
-  const signedCount = persons.filter((p) => signatures[p.key]?.dataUrl).length
-  const unsignedList = useMemo(() => persons.filter((p) => !signatures[p.key]?.dataUrl), [persons, signatures])
+  const signedCount = scopePersons.filter((p) => sigOf(p.name)?.dataUrl).length
+  const unsignedList = useMemo(
+    () => scopePersons.filter((p) => !sigOf(p.name)?.dataUrl),
+    [scopePersons, signatures, aliasToKey, session, isAdmin]
+  )
   const nextUp = unsignedList[0] ?? null
   const totalBlocks = files.reduce((n, f) => n + f.blocks.length, 0)
-  const pct = persons.length ? Math.round((signedCount / persons.length) * 100) : 0
-  const remaining = persons.length - signedCount
+  const pct = scopePersons.length ? Math.round((signedCount / scopePersons.length) * 100) : 0
+  const remaining = scopePersons.length - signedCount
 
   const setSig = (key, dataUrl, ts = Date.now()) =>
     setSignatures((m) => ({ ...m, [key]: { dataUrl, enabled: true, updatedAt: ts } }))
@@ -273,9 +356,10 @@ export default function App() {
   const saveAndNext = (url) => {
     if (!editing) return
     const ts = Date.now()
+    const storeKey = storeKeyFor(editing)
     const nm = persons.find((p) => p.key === editing)?.name ?? editing
-    setSig(editing, url, ts)
-    pushSig(editing, nm, url, ts)
+    setSig(storeKey, url, ts)
+    pushSig(storeKey, nm, url, ts)
     const idx = unsignedList.findIndex((p) => p.key === editing)
     const next = unsignedList[idx + 1] ?? unsignedList.find((p) => p.key !== editing) ?? null
     if (next) {
@@ -288,14 +372,17 @@ export default function App() {
     }
   }
 
-  const toggleEnabled = (key) =>
+  const toggleEnabled = (key) => {
+    const sk = storeKeyFor(key)
     setSignatures((m) => ({
       ...m,
-      [key]: { dataUrl: m[key]?.dataUrl, enabled: m[key]?.enabled === false ? true : false },
+      [sk]: { dataUrl: m[sk]?.dataUrl, enabled: m[sk]?.enabled === false ? true : false },
     }))
+  }
 
   const clearSig = (key) => {
-    setSignatures((m) => { const n = { ...m }; delete n[key]; return n })
+    const sk = storeKeyFor(key)
+    setSignatures((m) => { const n = { ...m }; delete n[sk]; return n })
     notify('TTD dihapus.', 'info')
   }
 
@@ -315,7 +402,8 @@ export default function App() {
     slotNames(f).forEach(({ blockId, name }) => {
       need += 1
       const k = normKey(name)
-      if (isSigned(k) && !seen.has(`${blockId}-${k}`)) {
+      const s = sigOf(name)
+      if (s?.dataUrl && s?.enabled !== false && !seen.has(`${blockId}-${k}`)) {
         seen.add(`${blockId}-${k}`)
         hit += 1
       }
@@ -330,7 +418,7 @@ export default function App() {
       await exportSignedExcel({
         originalBuffer: f.buffer,
         blocks: f.blocks,
-        signatures,
+        signatures: effSigsFor(f),
         outName: f.name.replace(/\.xlsx?$/i, '') + '-signed.xlsx',
       })
       notify(`${shortName(f.name)} terdownload.`, 'ok')
@@ -348,6 +436,7 @@ export default function App() {
       await exportAllZip({
         files,
         signatures,
+        signaturesForFile: (f) => effSigsFor(f),
         outName: `Laporan-Bulanan-signed-${files.length}-file.zip`,
         onProgress: (a, b, name) => {
           if (b === 100) setBusy(`Mengompres ZIP… ${Math.round(a)}%`)
@@ -426,7 +515,9 @@ export default function App() {
 
   const doPushAll = async () => {
     if (!cloud.url) return notify('Isi URL Apps Script dulu.', 'err')
-    const entries = Object.entries(signatures).filter(([, s]) => s?.dataUrl)
+    // User biasa hanya boleh mendorong TTD miliknya sendiri
+    const mine = (key) => isAdmin || !session || (myCanonKey && (key === myCanonKey || aliasToKey.get(key) === myCanonKey))
+    const entries = Object.entries(signatures).filter(([key, s]) => s?.dataUrl && mine(key))
     if (!entries.length) return notify('Belum ada TTD lokal.', 'err')
     const nameOf = (key) => persons.find((p) => p.key === key)?.name ?? key
     setBusy('Mengirim TTD ke cloud…')
@@ -479,7 +570,12 @@ export default function App() {
     setBusy(`Mengunduh ${shortName(df.name)}…`)
     try {
       const j = await cloudGet(cloud.url, df.id)
-      await addOneBatch([{ name: j.name || df.name, buf: b64ToBuf(j.base64) }])
+      await addOneBatch([{
+        name: j.name || df.name,
+        buf: b64ToBuf(j.base64),
+        month: df.month || '',
+        monthId: df.monthId || '',
+      }])
     } catch (e) {
       notify(e.message, 'err')
     } finally {
@@ -497,6 +593,7 @@ export default function App() {
         name: f.name,
         base64: bufToB64(f.buffer.slice(0)),
         mime: XLSX_MIME,
+        folderId: f.monthId || '',
       })
       notify(`${shortName(f.name)} tersimpan di Drive.`, 'ok')
       doDriveList(true)
@@ -515,11 +612,11 @@ export default function App() {
       const wb = await buildSignedWorkbook({
         originalBuffer: f.buffer.slice(0),
         blocks: f.blocks,
-        signatures,
+        signatures: effSigsFor(f),
       })
       const buf = await wb.xlsx.writeBuffer()
       const outName = f.name.replace(/\.xlsx?$/i, '') + '-signed.xlsx'
-      await cloudSave(cloud.url, { name: outName, base64: bufToB64(buf), mime: XLSX_MIME })
+      await cloudSave(cloud.url, { name: outName, base64: bufToB64(buf), mime: XLSX_MIME, folderId: f.monthId || '' })
       notify(`${outName} tersimpan di Drive.`, 'ok')
       doDriveList(true)
     } catch (e) {
@@ -530,7 +627,105 @@ export default function App() {
     }
   }
 
-  const primaryAction = () => {    if (!files.length) {
+  /* ===== Auth: login NIK + boot sesuai akun ===== */
+  const doLogin = async (nik, password) => {
+    setBusy('Masuk…')
+    try {
+      const j = await cloudLogin(cloud.url, nik, password)
+      const ses = { ...j.user, ts: Date.now(), offline: false }
+      setSession(ses)
+      saveSession(ses)
+      notify(`Halo, ${ses.name || ses.nik} 👋`, 'ok')
+      await boot(ses, false)
+    } catch (e) {
+      // Offline: sesi yang pernah login di HP ini boleh lanjut tanpa password
+      const cached = loadSession()
+      if (cached && cached.nik === String(nik).trim()) {
+        const ses = { ...cached, offline: true }
+        setSession(ses)
+        notify('Offline — memakai sesi tersimpan di HP ini.', 'info')
+        await boot(ses, true)
+      } else {
+        throw e
+      }
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const doLogout = () => {
+    clearSession()
+    setSession(null)
+    setFiles([])
+    setActiveId(null)
+    setUsers([])
+    setDriveFiles([])
+    setMonths([])
+    setMonthSel('__all__')
+    setEditing(null)
+    setMtab('preview')
+    notify('Keluar. Sampai jumpa 👋', 'info')
+  }
+
+  // Muat TTD + user + file Drive sesuai akun (admin = semua, user = miliknya)
+  const boot = async (ses, offline) => {
+    const admin = ses.role === 'admin'
+    setBusy('Menyiapkan…')
+    try {
+      if (!offline) {
+        try {
+          const u = await cloudUsers(cloud.url)
+          setUsers(u.users || [])
+        } catch (e) { console.warn('daftar user gagal:', e.message) }
+        try {
+          const j = await cloudPull(cloud.url)
+          setSignatures((prev) => mergeSignatures(prev, j.signatures).merged)
+          setCloudOk(true)
+        } catch (e) { console.warn('pull gagal:', e.message) }
+      }
+      let tree = { months: [], files: [] }
+      if (!offline) {
+        try {
+          tree = await cloudFiles(cloud.url)
+          setDriveFiles(tree.files || [])
+          setMonths(tree.months || [])
+          setMonthSel('__all__')
+        } catch (e) { console.warn('daftar drive gagal:', e.message) }
+      }
+      const items = []
+      let n = 0
+      for (const df of tree.files || []) {
+        setBusy(`Mengunduh ${++n}/${tree.files.length}… ${shortName(df.name)}`)
+        try {
+          const j = await cloudGet(cloud.url, df.id)
+          items.push({
+            name: j.name || df.name,
+            buf: b64ToBuf(j.base64),
+            month: df.month || '',
+            monthId: df.monthId || '',
+          })
+        } catch (e) { console.warn('unduh gagal:', df.name, e.message) }
+      }
+      const { next, failed } = await parseItems(items)
+      failed.forEach((m) => notify(`Gagal membaca ${m}`, 'err'))
+      const kept = admin ? next : next.filter((f) => fileHasUser(f, ses))
+      setFiles(kept)
+      setActiveId(kept[0]?.id ?? null)
+      if (kept.length) {
+        const hit = new Set(kept.map((f) => f.month || 'Lainnya')).size
+        notify(`${kept.length} file • ${hit} bulan dimuat. Selamat bekerja! 🎉`, 'ok')
+      } else if (admin) {
+        await loadSample()
+      } else {
+        notify('Belum ada file laporan untuk akun ini di Drive.', 'info')
+      }
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const primaryAction = () => {
+    if (!files.length) {
       notify('Upload file Excel dulu — bisa pilih banyak sekaligus.', 'info')
       setMtab('file')
       return
@@ -560,16 +755,30 @@ export default function App() {
     ? (unsignedList[editIdx + 1] ?? unsignedList.find((p) => p.key !== editing) ?? null)
     : unsignedList[0] ?? null
 
+  if (!session) {
+    return (
+      <>
+        {busy && <div className="busybar" role="status">{busy}</div>}
+        <LoginPage onLogin={doLogin} />
+        <div className="toasts" aria-live="polite">
+          {toasts.map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.msg}</div>)}
+        </div>
+      </>
+    )
+  }
+
   return (
     <>
       <header className="top">
         <div className="brand">
           <h1>✍️ TTD Laporan Bulanan</h1>
+          {session && <p>{session.name || session.nik}{isAdmin ? ' 👑 admin' : ''}{session.offline ? ' (offline)' : ''}</p>}
         </div>
-        <div className="prog" role="status" aria-label={`Progres ${signedCount} dari ${persons.length}`}>
+        <div className="prog" role="status" aria-label={`Progres ${signedCount} dari ${scopePersons.length}`}>
           <div className="progbar"><span style={{ width: `${pct}%` }} /></div>
-          <span className="progtext">{persons.length ? `${signedCount}/${persons.length}` : '—'}</span>
+          <span className="progtext">{scopePersons.length ? `${signedCount}/${scopePersons.length}` : '—'}</span>
         </div>
+        {session && <button onClick={doLogout} title="Keluar dari akun">Keluar</button>}
         <button className={`hcta ${!files.length || nextUp ? 'primary' : 'ok'}`} onClick={primaryAction}>
           {!files.length ? 'Mulai' : nextUp ? 'Isi TTD' : '⬇ ZIP'}
         </button>
@@ -580,7 +789,7 @@ export default function App() {
       <nav className="mtab" aria-label="Navigasi">
         {[
           ['file', 'File', files.length || ''],
-          ['nama', 'TTD', persons.length ? `${signedCount}/${persons.length}` : ''],
+          ['nama', 'TTD', scopePersons.length ? `${signedCount}/${scopePersons.length}` : ''],
           ['preview', 'Preview', ''],
         ].map(([k, label, n]) => (
           <button key={k} className={mtab === k ? 'on' : ''} onClick={() => setMtab(k)}>
@@ -614,9 +823,10 @@ export default function App() {
               const active = activeFile?.id === f.id
               const p = st.need ? Math.round((st.hit / st.need) * 100) : 0
               return (
-                <div key={f.id} className={`frow ${active ? 'active' : ''}`} onClick={() => { setActiveId(f.id); setMtab('preview') }} title={`${f.name} — ${st.hit}/${st.need} slot TTD`}>
+                <div key={f.id} className={`frow ${active ? 'active' : ''}`} onClick={() => { setActiveId(f.id); setMtab('preview') }} title={`${f.month ? `${f.month} • ` : ''}${f.name} — ${st.hit}/${st.need} slot TTD`}>
                   <span className={`dot${st.done ? ' ok' : st.hit ? ' half' : ''}`} />
                   <span className="fname">{shortName(f.name)}</span>
+                  {f.month && <span className="badge">{f.month}</span>}
                   <button
                     className="iconbtn"
                     onClick={(e) => { e.stopPropagation(); doExportOne(f) }}
@@ -688,9 +898,17 @@ export default function App() {
                 <button onClick={() => doDriveList(false)}>Muat daftar</button>
               </div>
             )}
-            {driveFiles.map((df) => (
-              <div key={df.id} className="frow" title={`${df.name} — klik untuk memuat`}>
+            {months.length > 0 && (
+              <div className="chips" role="tablist" aria-label="Filter bulan">
+                {[['__all__', 'Semua'], ...months.map((m) => [m.id, m.name])].map(([k, l]) => (
+                  <button key={k} className={monthSel === k ? 'on' : ''} onClick={() => setMonthSel(k)}>{l}</button>
+                ))}
+              </div>
+            )}
+            {(monthSel === '__all__' ? driveFiles : driveFiles.filter((df) => df.monthId === monthSel)).map((df) => (
+              <div key={df.id} className="frow" title={`${df.month ? `${df.month} • ` : ''}${df.name} — klik untuk memuat`}>
                 <span className="fname" onClick={() => doDriveLoad(df)}>{shortName(df.name)}</span>
+                {monthSel === '__all__' && df.month && <span className="badge">{df.month}</span>}
                 <button
                   className="iconbtn"
                   onClick={() => doDriveLoad(df)}
@@ -710,27 +928,27 @@ export default function App() {
         {/* LANGKAH 2 — TANDA TANGAN */}
         <div className="pane pane-nama">
           <div className="card">
-            <h2>Tanda tangan <span className="mut">• {signedCount}/{persons.length || '–'}</span></h2>
-            {!persons.length && (
+            <h2>Tanda tangan <span className="mut">• {signedCount}/{scopePersons.length || '–'}</span></h2>
+            {!scopePersons.length && (
               <div className="empty">
                 <div className="emptyart">📁</div>
                 <p className="mut">Upload file dulu.</p>
                 <button className="primary" onClick={() => setMtab('file')}>Upload →</button>
               </div>
             )}
-            {!!persons.length && nextUp && (
-              <button className="nextup" onClick={() => setEditing(nextUp.key)}>
+            {!!scopePersons.length && nextUp && (
+              <button className="nextup" onClick={() => handleEditSig(nextUp.key, nextUp.name)}>
                 <span className="nu-text">Berikutnya: <b>{nextUp.name}</b> <span className="mut">({nextUp.count}×)</span></span>
                 <span className="nu-go">Isi →</span>
               </button>
             )}
-            {!!persons.length && !nextUp && (
+            {!!scopePersons.length && !nextUp && (
               <button className="nextup done" onClick={() => setMtab('preview')}>
                 <span className="nu-text">✅ Semua lengkap — siap export</span>
                 <span className="nu-go">→</span>
               </button>
             )}
-            {!!persons.length && (
+            {!!scopePersons.length && (
               <div className="chips" role="tablist" aria-label="Filter nama">
                 {[['semua', 'Semua'], ['belum', `Belum ${remaining}`], ['sudah', `Sudah ${signedCount}`]].map(([k, l]) => (
                   <button key={k} className={filter === k ? 'on' : ''} onClick={() => setFilter(k)}>{l}</button>
@@ -743,10 +961,10 @@ export default function App() {
               </div>
             )}
             {filtered.map((p) => {
-              const sig = signatures[p.key]
+              const sig = sigOf(p.name)
               const done = Boolean(sig?.dataUrl)
               return (
-                <button key={p.key} className={`person${done ? ' done' : ''}`} onClick={() => setEditing(p.key)} title={done ? 'Klik untuk ubah' : 'Klik untuk isi'}>
+                <button key={p.key} className={`person${done ? ' done' : ''}`} onClick={() => handleEditSig(p.key, p.name)} title={done ? 'Klik untuk ubah' : 'Klik untuk isi'}>
                   <span className="pthumb">{sig?.dataUrl ? <img src={sig.dataUrl} alt="" /> : '＋'}</span>
                   <span className="ptext">
                     <b>{p.name}</b>
@@ -756,7 +974,7 @@ export default function App() {
                 </button>
               )
             })}
-            {!!persons.length && !filtered.length && <div className="mut">Tidak ketemu. <button className="linkbtn" onClick={() => { setQ(''); setFilter('semua') }}>Reset</button></div>}
+            {!!scopePersons.length && !filtered.length && <div className="mut">Tidak ketemu. <button className="linkbtn" onClick={() => { setQ(''); setFilter('semua') }}>Reset</button></div>}
           </div>
         </div>
 
@@ -766,7 +984,7 @@ export default function App() {
             <div className="expgrid">
               <div className="expinfo">
                 <b>Export</b>
-                <span className="mut">{files.length} file • {signedCount}/{persons.length} TTD{remaining > 0 && persons.length > 0 ? ` • ${remaining} belum` : ''}</span>
+                <span className="mut">{files.length} file • {signedCount}/{scopePersons.length} TTD{remaining > 0 && scopePersons.length > 0 ? ` • ${remaining} belum` : ''}</span>
               </div>
               <button className="ok" onClick={doExportZip} disabled={!files.length || signedCount === 0}>
                 ⬇ ZIP{files.length ? ` (${files.length})` : ''}
@@ -796,7 +1014,7 @@ export default function App() {
                       key={f.id}
                       className={activeFile?.id === f.id ? 'on' : ''}
                       onClick={() => { setActiveId(f.id); setMtab('preview') }}
-                      title={`${f.name} — ${st.hit}/${st.need}`}
+                      title={`${f.month ? `${f.month} • ` : ''}${f.name} — ${st.hit}/${st.need}`}
                     >
                       {st.done ? '✓ ' : ''}{shortName(f.name)}
                     </button>
@@ -839,11 +1057,11 @@ export default function App() {
                 sheet={activeFile.sheet}
                 aoa={activeFile.aoa}
                 blocks={activeFile.blocks}
-                signatures={signatures}
+                signatures={effSigsFor(activeFile)}
                 fileUid={activeFile.id}
                 spotMissing={spot}
                 fit={previewFit}
-                onEditSig={(key) => setEditing(key)}
+                onEditSig={(key) => handleEditSig(key, persons.find((p) => p.key === key)?.name ?? key)}
               />
             )}
             {activeFile && view === 'ringkas' && (
@@ -856,13 +1074,13 @@ export default function App() {
                         <div className="lab">{s.role}</div>
                         <div className="names">
                           {s.names.map((nm) => {
-                            const sig = signatures[normKey(nm)]
+                            const sig = sigOf(nm)
                             const on = sig?.dataUrl && sig?.enabled !== false
                             return (
                               <button
                                 key={nm}
                                 className={`chipbtn chip ${on ? 'signed' : 'miss'}`}
-                                onClick={() => { setEditing(normKey(nm)); setMtab('nama') }}
+                                onClick={() => { if (handleEditSig(normKey(nm), nm)) setMtab('nama') }}
                                 title={on ? `${nm} (${s.role}) — klik untuk ubah` : `${nm} (${s.role}) — belum TTD, klik untuk isi`}
                               >
                                 {on && <img src={sig.dataUrl} alt="" />}
@@ -883,7 +1101,7 @@ export default function App() {
 
       {/* CTA lengket di HP */}
       <div className="actionbar">
-        <span className="mut">{persons.length ? `${signedCount}/${persons.length} TTD` : 'Siap?'}</span>
+        <span className="mut">{scopePersons.length ? `${signedCount}/${scopePersons.length} TTD` : 'Siap?'}</span>
         <button className={!files.length || nextUp ? 'primary' : 'ok'} onClick={primaryAction}>{ctaLabel}</button>
       </div>
 
@@ -895,8 +1113,8 @@ export default function App() {
         <SignaturePad
           key={editing}
           personName={editingPerson.name}
-          initial={signatures[editingPerson.key]?.dataUrl}
-          enabled={signatures[editingPerson.key]?.enabled !== false}
+          initial={sigOf(editingPerson.name)?.dataUrl}
+          enabled={sigOf(editingPerson.name)?.enabled !== false}
           hasNext={Boolean(nextAfterEdit)}
           nextName={nextAfterEdit?.name}
           onClose={() => setEditing(null)}
@@ -904,8 +1122,9 @@ export default function App() {
           onDelete={() => { clearSig(editingPerson.key); setEditing(null) }}
           onSave={(url) => {
             const ts = Date.now()
-            setSig(editingPerson.key, url, ts)
-            pushSig(editingPerson.key, editingPerson.name, url, ts)
+            const storeKey = storeKeyFor(editingPerson.key)
+            setSig(storeKey, url, ts)
+            pushSig(storeKey, editingPerson.name, url, ts)
             setEditing(null)
             notify(`TTD ${editingPerson.name} tersimpan.`, 'ok')
           }}

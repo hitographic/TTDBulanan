@@ -14,6 +14,31 @@ export const splitNames = (v) =>
     .map((s) => s.replace(/\s+/g, ' ').trim())
     .filter(Boolean)
 
+/**
+ * Samakan ejaan nama vs akun user.
+ * - Cocok persis (normKey, toleran titik): "Mukharom J.S." = "Mukharom JS."
+ * - Cocok inisial per token: "A. Wahid A.W." = "Abdul Wahid A.W.",
+ *   "Satria W.K." = "Satria Wijaya K.", "Zaidhiya R.R." = "Zaidhiya Rizqi R."
+ * - Varian lain (mis. "Zaidhiya R.") didaftarkan di kolom alias pada tab User.
+ */
+const toks = (s) => String(s || '').toLowerCase().split(/[\s.]+/).filter(Boolean)
+const tokEq = (a, b) =>
+  a === b || (a.length === 1 && b.startsWith(a)) || (b.length === 1 && a.startsWith(b))
+
+export const fuzzyNameMatch = (a, b) => {
+  const A = toks(a), B = toks(b)
+  return A.length > 0 && A.length === B.length && A.every((t, i) => tokEq(t, B[i]))
+}
+
+/** Nama di file milik user? user = {nameInFile, aliases: []}. */
+export const matchNameToUser = (fileName, user) => {
+  if (!user) return false
+  const cands = [user.nameInFile, ...(user.aliases || [])].filter(Boolean)
+  return cands.some(
+    (c) => normKey(fileName) === normKey(c) || fuzzyNameMatch(fileName, c)
+  )
+}
+
 const clean = (v) => String(v ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
 
 // Label peran di baris footer. Urutan penting: yang spesifik dulu.
