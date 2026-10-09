@@ -43,3 +43,24 @@ export const clearSession = () => {
     localStorage.removeItem(SES_KEY)
   } catch { /* abaikan */ }
 }
+
+/** Jejak "sudah dibaca" per NIK (nama file), untuk walkthrough user. */
+const READ_KEY = 'lapbul-read-v1'
+
+export const loadRead = (nik) => {
+  try {
+    const o = JSON.parse(localStorage.getItem(READ_KEY) || '{}')
+    const arr = o?.[nik]
+    return new Set(Array.isArray(arr) ? arr : [])
+  } catch {
+    return new Set()
+  }
+}
+
+export const saveRead = (nik, set) => {
+  try {
+    const o = JSON.parse(localStorage.getItem(READ_KEY) || '{}')
+    o[nik] = [...set]
+    localStorage.setItem(READ_KEY, JSON.stringify(o))
+  } catch { /* abaikan */ }
+}

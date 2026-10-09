@@ -528,3 +528,26 @@ button.stagecard { display:flex; width:100%; align-items:center; gap:10px; text-
 .confetti span:nth-child(3n+1) { background:var(--sun); }
 .confetti span:nth-child(3n+2) { background:var(--teal); }
 @keyframes cfall { to { transform:translateY(120vh) rotate(720deg); } }
+
+/* ================= Walkthrough user ================= */
+button.modecard { display:flex; width:100%; gap:12px; align-items:center; text-align:left; background:#fffdf7; padding:16px; margin-bottom:10px; }
+button.modecard.sel { background:var(--sun); transform:rotate(-.5deg); }
+.modecard .scicon { font-size:36px; flex:none; }
+.modecard b { display:block; font-size:16px; }
+.modecard small { color:#5b6b8c; font-weight:700; }
+.navrow { display:flex; gap:10px; margin-top:12px; }
+.navrow button { flex:1; min-height:54px; font-size:15px; }
+.navrow .ghost { background:#fffdf7; }
+.slotrow { display:flex; align-items:center; gap:10px; background:#fffdf7; border:3px solid var(--ink); border-radius:14px; box-shadow:3px 3px 0 var(--ink); padding:10px 12px; margin-bottom:8px; }
+.slotrow .sinfo { flex:1; min-width:0; }
+.slotrow .sinfo b { display:block; font-size:14px; overflow-wrap:anywhere; }
+.slotrow .sinfo small { color:#5b6b8c; font-weight:700; }
+.slotrow.done { background:#f2fbf5; }
+.scheck { width:34px; height:34px; flex:none; border-radius:50%; border:3px solid var(--ink); background:#e8e0d0; display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:800; }
+.slotrow.done .scheck { background:var(--teal); }
+.readpill { font-size:11px; font-weight:800; border:2px solid var(--ink); border-radius:99px; padding:2px 10px; background:#e8e0d0; flex:none; white-space:nowrap; }
+.readpill.ok { background:var(--teal); color:#06302b; }
+.onecard { text-align:center; background:#fffdf7; border:3px solid var(--ink); border-radius:20px; box-shadow:5px 5px 0 var(--ink); padding:20px 16px; }
+.onecard .baname { display:block; font-size:19px; font-weight:800; margin-top:4px; overflow-wrap:anywhere; }
+.onesig { min-height:130px; display:flex; align-items:center; justify-content:center; background:#fff; border:2.5px dashed #b3a586; border-radius:14px; margin:12px 0; padding:10px; }
+.onesig img { max-height:120px; max-width:100%; object-fit:contain; }

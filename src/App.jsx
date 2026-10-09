@@ -15,6 +15,7 @@ import LoginPage from './components/LoginPage'
 import { browserMeasure, geomForSide } from './lib/textGeom'
 import SignaturePad from './components/SignaturePad'
 import ReportPreview from './components/ReportPreview'
+import UserWizard from './components/UserWizard'
 
 let fileSeq = 0
 let toastSeq = 0
@@ -926,6 +927,26 @@ export default function App() {
         {busy && <div className="busybar" role="status">{busy}</div>}
         <LoginPage onLogin={doLogin} />
         {toastEl}
+      </>
+    )
+  }
+
+  // User biasa: walkthrough Baca -> Pilih -> Isi -> Selesai (admin: dashboard penuh)
+  if (!isAdmin) {
+    return (
+      <>
+        {busy && <div className="busybar" role="status">{busy}</div>}
+        <UserWizard
+          session={session}
+          files={files}
+          sigOf={sigOf}
+          isMine={(name) => matchNameToUser(name, session)}
+          effSigsFor={effSigsFor}
+          onRequestSign={(key) => handleEditSig(key, persons.find((p) => p.key === key)?.name ?? key)}
+          onLogout={doLogout}
+        />
+        {toastEl}
+        {padEl}
       </>
     )
   }
