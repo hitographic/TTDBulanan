@@ -656,6 +656,33 @@ export default function App() {
     }
   }
 
+  // Admin: muat seluruh file dalam satu bulan sekaligus
+  const doDriveLoadMonth = async (monthId) => {
+    const list = driveFiles.filter((df) => df.monthId === monthId)
+    if (!list.length) return notify('Bulan ini kosong.', 'info')
+    const mname = months.find((m) => m.id === monthId)?.name || ''
+    setBusy(`Mengunduh ${list.length} file ${mname}…`)
+    try {
+      const items = []
+      let n = 0
+      for (const df of list) {
+        setBusy(`Mengunduh ${++n}/${list.length}… ${shortName(df.name)}`)
+        try {
+          const j = await cloudGet(cloud.url, df.id)
+          items.push({
+            name: j.name || df.name,
+            buf: b64ToBuf(j.base64),
+            month: df.month || '',
+            monthId: df.monthId || '',
+          })
+        } catch (e) { console.warn('unduh gagal:', df.name, e.message) }
+      }
+      await addOneBatch(items)
+    } finally {
+      setBusy('')
+    }
+  }
+
   const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
   const doDriveUpload = async (f) => {
@@ -767,6 +794,15 @@ export default function App() {
       }
       const items = []
       let n = 0
+      if (admin) {
+        // Admin mengatur sendiri: pilih bulan di kartu Drive untuk dimuat
+        if (!(tree.files || []).length) {
+          await loadSample()
+        } else {
+          notify(`Drive siap: ${(tree.months || []).length} bulan, ${tree.files.length} file. Pilih bulan di kartu Drive.`, 'info')
+        }
+        return
+      }
       for (const df of tree.files || []) {
         setBusy(`Mengunduh ${++n}/${tree.files.length}… ${shortName(df.name)}`)
         try {
@@ -1000,6 +1036,13 @@ export default function App() {
                 {[['__all__', 'Semua'], ...months.map((m) => [m.id, m.name])].map(([k, l]) => (
                   <button key={k} className={monthSel === k ? 'on' : ''} onClick={() => setMonthSel(k)}>{l}</button>
                 ))}
+              </div>
+            )}
+            {monthSel !== '__all__' && (
+              <div className="toolbar" style={{ marginBottom: 6 }}>
+                <button className="primary" onClick={() => doDriveLoadMonth(monthSel)}>
+                  ⬇ Muat bulan {months.find((m) => m.id === monthSel)?.name || ''}
+                </button>
               </div>
             )}
             {(monthSel === '__all__' ? driveFiles : driveFiles.filter((df) => df.monthId === monthSel)).map((df) => (

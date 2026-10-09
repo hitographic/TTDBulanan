@@ -83,6 +83,10 @@ function parseUsers() {
   for (var i = 1; i < v.length; i++) {
     var nik = String(v[i][cNik] || '').trim();
     if (!nik) continue;
+    var uname = cName >= 0 ? String(v[i][cName] || '').trim() : '';
+    // Admin bila kolom role berisi admin, ATAU NIK/Name-nya "admin"
+    var isAdmin = (cRole >= 0 && /admin/i.test(String(v[i][cRole] || ''))) ||
+      nik.toLowerCase() === 'admin' || uname.toLowerCase() === 'admin';
     var aliases = [];
     if (cAlias >= 0) {
       aliases = String(v[i][cAlias] || '').split(';')
@@ -91,10 +95,10 @@ function parseUsers() {
     }
     out.push({
       nik: nik,
-      name: cName >= 0 ? String(v[i][cName] || '').trim() : '',
+      name: uname,
       nameInFile: cNif >= 0 ? String(v[i][cNif] || '').trim() : '',
       password: cPw >= 0 ? String(v[i][cPw] || '') : '',
-      role: (cRole >= 0 && /admin/i.test(String(v[i][cRole] || ''))) ? 'admin' : 'user',
+      role: isAdmin ? 'admin' : 'user',
       aliases: aliases
     });
   }

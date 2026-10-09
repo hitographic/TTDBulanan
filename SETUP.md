@@ -15,7 +15,8 @@ Di Sheet ini, tab **`User`** berisi akun dengan header persis:
   `Satria W.K.` = `Satria Wijaya K.`). Varian yang jauh (`Zaidhiya R.`)
   tulis di kolom **alias**, dipisah `;`.
 - **role**: isi `admin` untuk akun admin (melihat semua file & boleh
-  mengisi TTD siapa pun). Kosongkan = user biasa (hanya file & TTD miliknya).
+  mengisi TTD siapa pun). Tanpa kolom role pun akun ber-NIK/nama `admin`
+  otomatis jadi admin. Kosongkan = user biasa (hanya file & TTD miliknya).
 
 ## 1. Pasang backend (Apps Script)
 
@@ -36,9 +37,10 @@ Di Sheet ini, tab **`User`** berisi akun dengan header persis:
 
 1. Buka aplikasinya (lihat bagian 3) → halaman **login** → masuk dengan
    NIK & password dari tab User.
-2. Saat login, app otomatis: tarik user + TTD dari cloud, lalu unduh
-   file Excel dari tiap folder bulan di Drive (**admin**: semua file,
-   **user**: hanya file yang memuat namanya).
+2. Saat login, app otomatis: tarik user + TTD dari cloud, lalu baca
+   daftar file dari tiap folder bulan di Drive. **Admin** memilih bulan
+   di kartu Drive lalu **⬇ Muat bulan** (tidak auto-unduh agar ringan);
+   **user** langsung dimuatkan hanya file yang memuat namanya.
 3. Panel kiri → kartu **Cloud** → tempel Web app URL → **Simpan & Tes**.
    - Dot hijau = tersambung. Tanpa URL pun app tetap jalan lokal.
 4. **⬇ Ambil TTD** = tarik database dari Sheets. **⬆ Kirim semua** =
