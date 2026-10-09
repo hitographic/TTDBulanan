@@ -4,6 +4,7 @@ import { useState } from 'react'
 export default function LoginPage({ onLogin }) {
   const [nik, setNik] = useState('')
   const [pw, setPw] = useState('')
+  const [show, setShow] = useState(false)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -26,13 +27,14 @@ export default function LoginPage({ onLogin }) {
 
   return (
     <div className="loginwrap">
+      <div className="loginbg" aria-hidden />
       <form className="card logincard" onSubmit={submit}>
-        <div className="loginlogo" aria-hidden>✍️</div>
+        <div className="loginlogo" aria-hidden><span>✍️</span></div>
         <h1>TTD Laporan Bulanan</h1>
-        <p className="mut">Masuk dengan NIK & password.</p>
+        <p className="loginsub">Tanda tangan digital laporan bulanan</p>
         {err && <div className="formerr" role="alert">{err}</div>}
         <label className="llab">
-          NIK
+          <span>NIK</span>
           <input
             type="text" inputMode="numeric" autoComplete="username"
             value={nik} onChange={(e) => setNik(e.target.value)}
@@ -40,16 +42,28 @@ export default function LoginPage({ onLogin }) {
           />
         </label>
         <label className="llab">
-          Password
-          <input
-            type="password" autoComplete="current-password"
-            value={pw} onChange={(e) => setPw(e.target.value)}
-            placeholder="••••••••"
-          />
+          <span>Password</span>
+          <div className="pwrow">
+            <input
+              type={show ? 'text' : 'password'} autoComplete="current-password"
+              value={pw} onChange={(e) => setPw(e.target.value)}
+              placeholder="••••••••"
+            />
+            <button
+              type="button" className="pweye"
+              onClick={() => setShow((s) => !s)}
+              aria-label={show ? 'Sembunyikan password' : 'Tampilkan password'}
+              title={show ? 'Sembunyikan' : 'Tampilkan'}
+            >
+              {show ? '🙈' : '👁️'}
+            </button>
+          </div>
         </label>
-        <button className="primary big" style={{ width: '100%', marginTop: 10 }} disabled={loading}>
-          {loading ? 'Memeriksa…' : 'Masuk'}
+        <button className="loginbtn" disabled={loading}>
+          {loading && <span className="spin" aria-hidden />}
+          {loading ? 'Memeriksa…' : 'Masuk →'}
         </button>
+        <p className="loginfoot">TTDBULANAN</p>
       </form>
     </div>
   )
