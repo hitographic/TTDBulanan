@@ -15,6 +15,7 @@ import LoginPage from './components/LoginPage'
 import { browserMeasure, geomForSide } from './lib/textGeom'
 import SignaturePad from './components/SignaturePad'
 import ReportPreview from './components/ReportPreview'
+import UserFlow from './components/UserFlow'
 
 let fileSeq = 0
 let toastSeq = 0
@@ -873,14 +874,99 @@ export default function App() {
     ? (unsignedList[editIdx + 1] ?? unsignedList.find((p) => p.key !== editing) ?? null)
     : unsignedList[0] ?? null
 
+  // Finale user: pastikan TTD miliknya untuk file ini terkirim ke cloud
+  const pushOwnForFile = async (f) => {
+    if (!cloud.url) return false
+    try {
+      const jobs = []
+      slotNames(f).forEach(({ name }) => {
+        let k = normKey(name)
+        if (!isAdmin && session) {
+          if (!matchNameToUser(name, session)) return
+          k = myCanonKey
+        }
+        const s = signaturesRef.current[k]
+        if (s?.dataUrl && !jobs.find((j) => j.key === k)) {
+          jobs.push({ key: k, name, dataUrl: s.dataUrl, updatedAt: s.updatedAt || 0 })
+        }
+      })
+      for (const j of jobs) {
+        await cloudPush(cloud.url, j)
+      }
+      await flushPending(pendingRef.current, (p) =>
+        cloudPush(cloud.url, { key: p.key, name: p.name, dataUrl: p.dataUrl, updatedAt: p.updatedAt })
+      )
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  const toastEl = (
+    <div className="toasts" aria-live="polite">
+      {toasts.map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.msg}</div>)}
+    </div>
+  )
+
+  const padEl = editingPerson && (
+    <SignaturePad
+      key={editing}
+      personName={editingPerson.name}
+      initial={sigOf(editingPerson.name)?.dataUrl}
+      enabled={sigOf(editingPerson.name)?.enabled !== false}
+      hasNext={isAdmin && Boolean(nextAfterEdit)}
+      nextName={nextAfterEdit?.name}
+      onClose={() => setEditing(null)}
+      onToggleEnabled={() => toggleEnabled(editingPerson.key)}
+      onDelete={() => { clearSig(editingPerson.key); setEditing(null) }}
+      onSave={async (url) => {
+        const storeKey = storeKeyFor(editingPerson.key)
+        const nm = editingPerson.name
+        setEditing(null)
+        if (!cloud.autoSync) {
+          setSig(storeKey, url)
+          notify(`TTD ${nm} tersimpan.`, 'ok')
+          return
+        }
+        const r = await syncOne(storeKey, nm, url)
+        notify(
+          r === 'ok' ? `TTD ${nm} tersimpan di cloud ✅`
+          : r === 'local' ? `TTD ${nm} tersimpan.`
+          : `TTD ${nm} tersimpan lokal ⚠️ — koneksi gagal, dicoba otomatis. 🔄`,
+          r === 'fail' ? 'err' : 'ok'
+        )
+      }}
+      onSaveNext={saveAndNext}
+    />
+  )
+
   if (!session) {
     return (
       <>
         {busy && <div className="busybar" role="status">{busy}</div>}
         <LoginPage onLogin={doLogin} />
-        <div className="toasts" aria-live="polite">
-          {toasts.map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.msg}</div>)}
-        </div>
+        {toastEl}
+      </>
+    )
+  }
+
+  // User biasa: alur game 3 tahap (admin: dashboard penuh di bawah)
+  if (!isAdmin) {
+    return (
+      <>
+        {busy && <div className="busybar" role="status">{busy}</div>}
+        <UserFlow
+          session={session}
+          files={files}
+          sigOf={sigOf}
+          isMine={(name) => matchNameToUser(name, session)}
+          effSigsFor={effSigsFor}
+          onRequestSign={(key) => handleEditSig(key, persons.find((p) => p.key === key)?.name ?? key)}
+          onFinalSave={pushOwnForFile}
+          onLogout={doLogout}
+        />
+        {toastEl}
+        {padEl}
       </>
     )
   }
@@ -1249,41 +1335,8 @@ export default function App() {
         <button className={!files.length || nextUp ? 'primary' : 'ok'} onClick={primaryAction}>{ctaLabel}</button>
       </div>
 
-      <div className="toasts" aria-live="polite">
-        {toasts.map((t) => <div key={t.id} className={`toast ${t.kind}`}>{t.msg}</div>)}
-      </div>
-
-      {editingPerson && (
-        <SignaturePad
-          key={editing}
-          personName={editingPerson.name}
-          initial={sigOf(editingPerson.name)?.dataUrl}
-          enabled={sigOf(editingPerson.name)?.enabled !== false}
-          hasNext={Boolean(nextAfterEdit)}
-          nextName={nextAfterEdit?.name}
-          onClose={() => setEditing(null)}
-          onToggleEnabled={() => toggleEnabled(editingPerson.key)}
-          onDelete={() => { clearSig(editingPerson.key); setEditing(null) }}
-          onSave={async (url) => {
-            const storeKey = storeKeyFor(editingPerson.key)
-            const nm = editingPerson.name
-            setEditing(null)
-            if (!cloud.autoSync) {
-              setSig(storeKey, url)
-              notify(`TTD ${nm} tersimpan.`, 'ok')
-              return
-            }
-            const r = await syncOne(storeKey, nm, url)
-            notify(
-              r === 'ok' ? `TTD ${nm} tersimpan di cloud ✅`
-              : r === 'local' ? `TTD ${nm} tersimpan.`
-              : `TTD ${nm} tersimpan lokal ⚠️ — koneksi gagal, dicoba otomatis. 🔄`,
-              r === 'fail' ? 'err' : 'ok'
-            )
-          }}
-          onSaveNext={saveAndNext}
-        />
-      )}
+      {toastEl}
+      {padEl}
     </>
   )
 }
