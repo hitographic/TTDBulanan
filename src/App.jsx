@@ -977,7 +977,7 @@ export default function App() {
           {!files.length ? 'Mulai' : nextUp ? 'Isi TTD' : '⬇ ZIP'}
         </button>
       </header>
-      {busy && <div className="busybar" role="status">{busy}</div>}
+      {busyEl}
 
       {/* Tab navigasi HP */}
       <nav className="mtab" aria-label="Navigasi">
