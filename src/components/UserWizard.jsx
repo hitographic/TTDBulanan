@@ -20,6 +20,7 @@ export default function UserWizard({
   const [read, setRead] = useState(() => loadRead(session.nik))
   const [previewId, setPreviewId] = useState(null)
   const [oneIdx, setOneIdx] = useState(0)
+  const [confirmSkip, setConfirmSkip] = useState(false)
 
   useEffect(() => {
     saveRead(session.nik, read)
@@ -27,6 +28,7 @@ export default function UserWizard({
 
   const markRead = (f) => setRead((prev) => new Set(prev).add(f.name))
   const allRead = files.length > 0 && files.every((f) => read.has(f.name))
+  const unread = files.filter((f) => !read.has(f.name)).length
   const previewFile = previewId ? (files.find((f) => f.id === previewId) ?? null) : null
 
   const fileState = (f) => {
@@ -140,12 +142,33 @@ export default function UserWizard({
           ))}
           {!!files.length && (
             <div className="navrow">
-              <button className="primary" disabled={!allRead} onClick={() => goMode()}>
-                {allRead ? 'Lanjut →' : `Baca dulu (${[...read].length}/${files.length})`}
+              <button
+                className="primary"
+                onClick={() => { allRead ? goMode() : setConfirmSkip(true) }}
+              >
+                {allRead ? 'Lanjut →' : `Lanjut (${files.length - unread}/${files.length} dibaca) →`}
               </button>
             </div>
           )}
         </>
+      )}
+
+      {confirmSkip && (
+        <div className="modal" role="dialog" aria-modal="true" aria-label="Konfirmasi lewati bacaan">
+          <div className="box" style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 44 }} aria-hidden>📖</div>
+            <h3 style={{ margin: '8px 0 4px' }}>Yakin tidak baca dulu?</h3>
+            <p className="mut">
+              Masih ada {unread} laporan belum dibaca. Tanda tangan berarti kamu menyetujui isinya.
+            </p>
+            <div className="toolbar center">
+              <button onClick={() => setConfirmSkip(false)}>← Baca dulu</button>
+              <button className="primary" onClick={() => { setConfirmSkip(false); goMode() }}>
+                Ya, lanjut →
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {step === 'mode' && (
